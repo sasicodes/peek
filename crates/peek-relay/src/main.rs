@@ -1,21 +1,11 @@
-mod handler;
-mod pages;
-mod rate_limit;
-mod registry;
-
 use std::error::Error;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{Router, extract::DefaultBodyLimit, routing::get};
-use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use handler::{public_handler, ws_handler};
-use rate_limit::RateLimiter;
-use registry::Registry;
+use peek_relay::{AppConfig, build_app};
 
 #[tokio::main]
 async fn main() {
@@ -70,33 +60,14 @@ async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         "starting peek"
     );
 
-    let rate_limiter = RateLimiter::new(rate_limit_rpm, Duration::from_secs(60));
-    let registry = Arc::new(Registry::new(
+    let app = build_app(AppConfig {
         domain,
-        Some(auth_token),
+        auth_token: Some(auth_token),
         max_tunnels,
         max_body_size,
+        rate_limit_rpm,
         trust_proxy_headers,
-        rate_limiter,
-    ));
-
-    {
-        let registry = registry.clone();
-        tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
-            loop {
-                interval.tick().await;
-                registry.rate_limiter.cleanup();
-            }
-        });
-    }
-
-    let app = Router::new()
-        .route("/tunnel", get(ws_handler))
-        .fallback(public_handler)
-        .layer(DefaultBodyLimit::max(max_body_size))
-        .layer(TraceLayer::new_for_http())
-        .with_state(registry);
+    });
 
     let addr = format!("0.0.0.0:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;

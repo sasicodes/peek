@@ -72,14 +72,25 @@ peek prints a public URL.
 
 | Option | Use |
 | --- | --- |
-| `--token` | same value as `PEEK_AUTH_TOKEN` |
 | `--domain` | hosted peek domain, like `example.com` |
+| `--token` | same value as `PEEK_AUTH_TOKEN` |
 | `--subdomain` | public URL name, like `myapp` |
 | `--password` | require a password for visitors |
+| `--server` | full relay WebSocket URL, like `wss://example.com/tunnel` |
 
 `--token` creates the tunnel. `--password` protects the public URL and is optional.
 
 Without `--subdomain`, peek creates a random name. Without `--password`, the URL is public.
+
+Environment variables:
+
+```bash
+PEEK_DOMAIN=example.com
+PEEK_AUTH_TOKEN=change-me
+PEEK_PASSWORD=optional-visitor-password
+```
+
+`PEEK_SERVER` can replace `PEEK_DOMAIN` when you need a full WebSocket URL. `PEEK_TOKEN` is still accepted as an old alias for `PEEK_AUTH_TOKEN`.
 
 ---
 
