@@ -49,25 +49,28 @@ Serve peek behind HTTPS before exposing it publicly.
 Install the CLI:
 
 ```bash
-cargo install --git https://github.com/sasicodes/peek peek-client
+cargo install --git https://github.com/sasicodes/peek peek-client --force
 ```
 
-Use the same domain and token from your hosted server:
+`--force` replaces an older installed `peek` with the latest version from GitHub.
+
+Run peek with the same domain and token from your hosted server:
+
+```bash
+peek localhost:3000 --domain example.com --token change-me
+```
+
+Or export them once and run peek after that:
 
 ```bash
 export PEEK_DOMAIN=example.com
 export PEEK_AUTH_TOKEN=change-me
-```
-
-Run peek:
-
-```bash
 peek localhost:3000
 ```
 
 peek prints a public URL.
 
-Options:
+### Options
 
 | Option | Use |
 | --- | --- |
@@ -80,7 +83,9 @@ Options:
 
 Without `--subdomain`, peek creates a random name. Without `--password`, the URL is public.
 
-Uninstall the CLI:
+---
+
+### Uninstall the CLI
 
 ```bash
 cargo uninstall peek-client
