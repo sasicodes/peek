@@ -1,8 +1,9 @@
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use peek_proto::{RegistrationRequest, RegistrationResponse};
 use tokio::net::TcpListener;
 
@@ -39,7 +40,7 @@ async fn start_relay(domain: &str) -> SocketAddr {
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::response::{IntoResponse, Response};
@@ -78,9 +79,10 @@ impl TestTunnelConn {
 async fn test_handle_tunnel(socket: WebSocket, registry: Arc<TestRegistry>) {
     let (mut sink, mut stream) = socket.split();
 
-    let msg = match tokio::time::timeout(Duration::from_secs(5), stream.next()).await {
-        Ok(Some(Ok(Message::Text(text)))) => text,
-        _ => return,
+    let Ok(Some(Ok(Message::Text(msg)))) =
+        tokio::time::timeout(Duration::from_secs(5), stream.next()).await
+    else {
+        return;
     };
     let reg_req: RegistrationRequest = match serde_json::from_str(&msg) {
         Ok(r) => r,
@@ -111,7 +113,7 @@ async fn test_handle_tunnel(socket: WebSocket, registry: Arc<TestRegistry>) {
 
     let resp = RegistrationResponse {
         ok: true,
-        url: format!("http://{}.{}", subdomain, registry.domain),
+        url: format!("http://{subdomain}.{}", registry.domain),
         subdomain: subdomain.clone(),
         error: None,
     };
@@ -170,9 +172,9 @@ async fn test_public_handler(
         return (axum::http::StatusCode::NOT_FOUND, "not found").into_response();
     };
 
-    let conn = match registry.tunnels.read().await.get(&subdomain).cloned() {
-        Some(c) => c,
-        None => return (axum::http::StatusCode::NOT_FOUND, "tunnel not found").into_response(),
+    let conn = registry.tunnels.read().await.get(&subdomain).cloned();
+    let Some(conn) = conn else {
+        return (axum::http::StatusCode::NOT_FOUND, "tunnel not found").into_response();
     };
 
     let method = request.method().to_string();
@@ -232,8 +234,8 @@ async fn start_local_server() -> (SocketAddr, &'static str) {
             "/headers",
             get(|headers: axum::http::HeaderMap| async move {
                 let mut out = String::new();
-                for (k, v) in headers.iter() {
-                    out.push_str(&format!("{}: {}\n", k, v.to_str().unwrap_or("")));
+                for (k, v) in &headers {
+                    let _ = writeln!(out, "{}: {}", k, v.to_str().unwrap_or(""));
                 }
                 out
             }),
@@ -276,14 +278,12 @@ async fn start_local_server() -> (SocketAddr, &'static str) {
     (addr, expected_body)
 }
 
-// ========== EXISTING TESTS ==========
-
 #[tokio::test]
 async fn test_tunnel_end_to_end() {
     let (local_addr, expected_body) = start_local_server().await;
     let relay_addr = start_relay("test.local").await;
 
-    let client = peek_client::TunnelClient::new(&format!("ws://{}/tunnel", relay_addr));
+    let client = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel")).unwrap();
     let handle = client.connect(local_addr.port()).await.unwrap();
 
     assert!(handle.url().contains("test.local"));
@@ -291,7 +291,7 @@ async fn test_tunnel_end_to_end() {
 
     let http_client = reqwest::Client::new();
     let resp = http_client
-        .get(format!("http://{}/", relay_addr))
+        .get(format!("http://{relay_addr}/"))
         .header("host", "testsubdomain.test.local")
         .send()
         .await
@@ -302,7 +302,7 @@ async fn test_tunnel_end_to_end() {
     assert_eq!(body, expected_body);
 
     let resp = http_client
-        .post(format!("http://{}/echo", relay_addr))
+        .post(format!("http://{relay_addr}/echo"))
         .header("host", "testsubdomain.test.local")
         .body("test data")
         .send()
@@ -322,7 +322,7 @@ async fn test_tunnel_not_found() {
 
     let http_client = reqwest::Client::new();
     let resp = http_client
-        .get(format!("http://{}/", relay_addr))
+        .get(format!("http://{relay_addr}/"))
         .header("host", "nonexistent.test2.local")
         .send()
         .await
@@ -335,14 +335,14 @@ async fn test_tunnel_not_found() {
 async fn test_tunnel_unreachable_local_server() {
     let relay_addr = start_relay("test3.local").await;
 
-    let client = peek_client::TunnelClient::new(&format!("ws://{}/tunnel", relay_addr));
+    let client = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel")).unwrap();
     let handle = client.connect(19999).await.unwrap();
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let http_client = reqwest::Client::new();
     let resp = http_client
-        .get(format!("http://{}/", relay_addr))
+        .get(format!("http://{relay_addr}/"))
         .header("host", "testsubdomain.test3.local")
         .send()
         .await
@@ -353,26 +353,22 @@ async fn test_tunnel_unreachable_local_server() {
     handle.close().await;
 }
 
-// ========== NEW TESTS ==========
-
 #[tokio::test]
 async fn test_concurrent_requests_through_tunnel() {
     let (local_addr, _) = start_local_server().await;
     let relay_addr = start_relay("test-concurrent.local").await;
 
-    let client = peek_client::TunnelClient::new(&format!("ws://{}/tunnel", relay_addr));
+    let client = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel")).unwrap();
     let handle = client.connect(local_addr.port()).await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let http_client = reqwest::Client::new();
-
-    // Fire 10 concurrent requests
     let mut tasks = Vec::new();
     for i in 0..10 {
         let http_client = http_client.clone();
         tasks.push(tokio::spawn(async move {
             let resp = http_client
-                .post(format!("http://{}/echo", relay_addr))
+                .post(format!("http://{relay_addr}/echo"))
                 .header("host", "testsubdomain.test-concurrent.local")
                 .body(format!("request-{i}"))
                 .send()
@@ -396,16 +392,14 @@ async fn test_large_request_body() {
     let (local_addr, _) = start_local_server().await;
     let relay_addr = start_relay("test-large.local").await;
 
-    let client = peek_client::TunnelClient::new(&format!("ws://{}/tunnel", relay_addr));
+    let client = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel")).unwrap();
     let handle = client.connect(local_addr.port()).await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let http_client = reqwest::Client::new();
-
-    // Send a 1 MiB body
     let large_body = vec![b'X'; 1024 * 1024];
     let resp = http_client
-        .post(format!("http://{}/large-echo", relay_addr))
+        .post(format!("http://{relay_addr}/large-echo"))
         .header("host", "testsubdomain.test-large.local")
         .body(large_body.clone())
         .send()
@@ -424,15 +418,13 @@ async fn test_large_request_body() {
 async fn test_multiple_tunnels_simultaneously() {
     let (local_addr, expected_body) = start_local_server().await;
     let relay_addr = start_relay("test-multi.local").await;
-
-    // Connect two tunnels
-    let client1 = peek_client::TunnelClient::new(&format!("ws://{}/tunnel", relay_addr));
+    let client1 = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel")).unwrap();
     let handle1 = client1
         .connect_with_subdomain(local_addr.port(), Some("tunnel1".into()))
         .await
         .unwrap();
 
-    let client2 = peek_client::TunnelClient::new(&format!("ws://{}/tunnel", relay_addr));
+    let client2 = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel")).unwrap();
     let handle2 = client2
         .connect_with_subdomain(local_addr.port(), Some("tunnel2".into()))
         .await
@@ -441,20 +433,16 @@ async fn test_multiple_tunnels_simultaneously() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let http_client = reqwest::Client::new();
-
-    // Request to tunnel1
     let resp1 = http_client
-        .get(format!("http://{}/", relay_addr))
+        .get(format!("http://{relay_addr}/"))
         .header("host", "tunnel1.test-multi.local")
         .send()
         .await
         .unwrap();
     assert_eq!(resp1.status(), 200);
     assert_eq!(resp1.text().await.unwrap(), expected_body);
-
-    // Request to tunnel2
     let resp2 = http_client
-        .get(format!("http://{}/", relay_addr))
+        .get(format!("http://{relay_addr}/"))
         .header("host", "tunnel2.test-multi.local")
         .send()
         .await
@@ -466,34 +454,25 @@ async fn test_multiple_tunnels_simultaneously() {
     handle2.close().await;
 }
 
-// NOTE: disconnect test omitted — TunnelHandle::close() stops the reconnect
-// loop but does not immediately close the WebSocket connection (spawned tasks
-// keep running). The tunnel is only removed from the relay when the WS fully
-// closes, which is non-deterministic in tests.
-
 #[tokio::test]
 async fn test_various_http_methods() {
     let (local_addr, _) = start_local_server().await;
     let relay_addr = start_relay("test-methods.local").await;
 
-    let client = peek_client::TunnelClient::new(&format!("ws://{}/tunnel", relay_addr));
+    let client = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel")).unwrap();
     let handle = client.connect(local_addr.port()).await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let http_client = reqwest::Client::new();
-
-    // GET
     let resp = http_client
-        .get(format!("http://{}/", relay_addr))
+        .get(format!("http://{relay_addr}/"))
         .header("host", "testsubdomain.test-methods.local")
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-
-    // POST with body
     let resp = http_client
-        .post(format!("http://{}/echo", relay_addr))
+        .post(format!("http://{relay_addr}/echo"))
         .header("host", "testsubdomain.test-methods.local")
         .body("hello")
         .send()
@@ -510,24 +489,20 @@ async fn test_non_200_status_codes_forwarded() {
     let (local_addr, _) = start_local_server().await;
     let relay_addr = start_relay("test-status.local").await;
 
-    let client = peek_client::TunnelClient::new(&format!("ws://{}/tunnel", relay_addr));
+    let client = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel")).unwrap();
     let handle = client.connect(local_addr.port()).await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let http_client = reqwest::Client::new();
-
-    // Test 404 from local server
     let resp = http_client
-        .get(format!("http://{}/status/404", relay_addr))
+        .get(format!("http://{relay_addr}/status/404"))
         .header("host", "testsubdomain.test-status.local")
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
-
-    // Test 500 from local server
     let resp = http_client
-        .get(format!("http://{}/status/500", relay_addr))
+        .get(format!("http://{relay_addr}/status/500"))
         .header("host", "testsubdomain.test-status.local")
         .send()
         .await
@@ -542,10 +517,8 @@ async fn test_no_host_header_returns_not_found() {
     let relay_addr = start_relay("test-nohost.local").await;
 
     let http_client = reqwest::Client::new();
-
-    // Request without a matching host header
     let resp = http_client
-        .get(format!("http://{}/", relay_addr))
+        .get(format!("http://{relay_addr}/"))
         .send()
         .await
         .unwrap();
@@ -558,7 +531,7 @@ async fn test_slow_local_server_responds() {
     let (local_addr, _) = start_local_server().await;
     let relay_addr = start_relay("test-slow.local").await;
 
-    let client = peek_client::TunnelClient::new(&format!("ws://{}/tunnel", relay_addr));
+    let client = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel")).unwrap();
     let handle = client.connect(local_addr.port()).await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -566,10 +539,8 @@ async fn test_slow_local_server_responds() {
         .timeout(Duration::from_secs(10))
         .build()
         .unwrap();
-
-    // Request to /slow which takes 2s
     let resp = http_client
-        .get(format!("http://{}/slow", relay_addr))
+        .get(format!("http://{relay_addr}/slow"))
         .header("host", "testsubdomain.test-slow.local")
         .send()
         .await

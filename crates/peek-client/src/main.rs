@@ -49,7 +49,9 @@ async fn run() -> Result<(), String> {
     let password = password.unwrap_or_else(generate_password);
     let visitor_password = password.clone();
 
-    let mut client = TunnelClient::new(&server_url).with_password(password);
+    let mut client = TunnelClient::new(&server_url)
+        .map_err(|error| error.to_string())?
+        .with_password(password);
     if let Some(token) = token {
         client = client.with_token(token);
     }

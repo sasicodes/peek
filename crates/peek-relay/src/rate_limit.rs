@@ -23,10 +23,12 @@ impl RateLimiter {
         }
     }
 
-    /// Returns `true` if the request is allowed, `false` if rate-limited.
     pub fn check(&self, ip: IpAddr) -> bool {
         let now = Instant::now();
-        let mut windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        let mut windows = self
+            .windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         let state = windows.entry(ip).or_insert(WindowState {
             count: 0,
@@ -34,7 +36,6 @@ impl RateLimiter {
         });
 
         if now.duration_since(state.window_start) >= self.window_duration {
-            // Window expired, reset
             state.count = 1;
             state.window_start = now;
             return true;
@@ -44,10 +45,12 @@ impl RateLimiter {
         state.count <= self.max_requests
     }
 
-    /// Remove expired entries to prevent unbounded memory growth.
     pub fn cleanup(&self) {
         let now = Instant::now();
-        let mut windows = self.windows.lock().unwrap_or_else(|e| e.into_inner());
+        let mut windows = self
+            .windows
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         windows.retain(|_, state| now.duration_since(state.window_start) < self.window_duration);
     }
 }
@@ -78,7 +81,6 @@ mod tests {
         assert!(limiter.check(ip1));
         assert!(!limiter.check(ip1));
 
-        // ip2 has its own quota
         assert!(limiter.check(ip2));
         assert!(limiter.check(ip2));
         assert!(!limiter.check(ip2));

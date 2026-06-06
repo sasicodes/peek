@@ -1,14 +1,14 @@
 use axum::extract::ws::Message;
 use rand::RngExt as _;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::collections::hash_map::Entry;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use subtle::ConstantTimeEq;
-use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc, oneshot};
 
 use crate::rate_limit::RateLimiter;
 
-/// Max in-flight requests per tunnel before rejecting with 503.
 pub const MAX_PENDING_PER_TUNNEL: usize = 10_000;
 
 pub struct Registry {
@@ -48,14 +48,10 @@ impl Registry {
         }
     }
 
-    pub fn validate_token(&self, token: &Option<String>) -> bool {
-        match &self.auth_token {
-            None => true,
-            Some(expected) => match token.as_deref() {
-                Some(provided) => provided.as_bytes().ct_eq(expected.as_bytes()).into(),
-                None => false,
-            },
-        }
+    pub fn validate_token(&self, token: Option<&str>) -> bool {
+        self.auth_token.as_ref().is_none_or(|expected| {
+            token.is_some_and(|provided| provided.as_bytes().ct_eq(expected.as_bytes()).into())
+        })
     }
 
     pub async fn register(&self, subdomain: String, conn: Arc<TunnelConnection>) -> bool {
@@ -63,8 +59,13 @@ impl Registry {
         if tunnels.len() >= self.max_tunnels {
             return false;
         }
-        tunnels.insert(subdomain, conn);
-        true
+        match tunnels.entry(subdomain) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(slot) => {
+                slot.insert(conn);
+                true
+            }
+        }
     }
 
     pub async fn remove(&self, subdomain: &str) {

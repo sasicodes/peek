@@ -11,6 +11,7 @@ pub enum ProtoError {
     Json(#[from] serde_json::Error),
 }
 
+#[must_use]
 pub fn encode_frame(request_id: u32, data: &[u8]) -> Vec<u8> {
     let mut frame = Vec::with_capacity(4 + data.len());
     frame.extend_from_slice(&request_id.to_be_bytes());
@@ -30,6 +31,7 @@ const CRLF: &[u8] = b"\r\n";
 const HEADER_END: &[u8] = b"\r\n\r\n";
 const MAX_HEADERS: usize = 100;
 
+#[must_use]
 pub fn serialize_request(
     method: &str,
     uri: &str,
@@ -60,7 +62,7 @@ pub struct DeserializedRequest {
 }
 
 pub fn deserialize_request(data: &[u8]) -> Result<DeserializedRequest, ProtoError> {
-    let (head, body) = split_head_body(data)?;
+    let (head, body) = split_head_body(data);
     let mut lines = head.split(|&b| b == b'\n');
 
     let request_line = lines
@@ -84,6 +86,7 @@ pub fn deserialize_request(data: &[u8]) -> Result<DeserializedRequest, ProtoErro
     })
 }
 
+#[must_use]
 pub fn serialize_response(status: u16, headers: &[(String, String)], body: &[u8]) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(status.to_string().as_bytes());
@@ -106,7 +109,7 @@ pub struct DeserializedResponse {
 }
 
 pub fn deserialize_response(data: &[u8]) -> Result<DeserializedResponse, ProtoError> {
-    let (head, body) = split_head_body(data)?;
+    let (head, body) = split_head_body(data);
     let mut lines = head.split(|&b| b == b'\n');
 
     let status_line = lines
@@ -150,7 +153,8 @@ pub mod close_codes {
     pub const AUTH_FAILED: u16 = 4002;
     pub const CAPACITY_FULL: u16 = 4003;
 
-    pub fn is_permanent(code: u16) -> bool {
+    #[must_use]
+    pub const fn is_permanent(code: u16) -> bool {
         matches!(
             code,
             TUNNEL_EXPIRED | TUNNEL_EVICTED | AUTH_FAILED | CAPACITY_FULL
@@ -158,12 +162,12 @@ pub mod close_codes {
     }
 }
 
-fn split_head_body(data: &[u8]) -> Result<(&[u8], &[u8]), ProtoError> {
-    if let Some(pos) = data.windows(HEADER_END.len()).position(|w| w == HEADER_END) {
-        Ok((&data[..pos], &data[pos + HEADER_END.len()..]))
-    } else {
-        Ok((data, &[]))
-    }
+fn split_head_body(data: &[u8]) -> (&[u8], &[u8]) {
+    data.windows(HEADER_END.len())
+        .position(|w| w == HEADER_END)
+        .map_or((data, &[]), |pos| {
+            (&data[..pos], &data[pos + HEADER_END.len()..])
+        })
 }
 
 fn strip_cr(line: &[u8]) -> &[u8] {

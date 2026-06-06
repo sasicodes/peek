@@ -2,10 +2,12 @@ mod handler;
 mod rate_limit;
 mod registry;
 
+use std::error::Error;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::{extract::DefaultBodyLimit, routing::get, Router};
+use axum::{Router, extract::DefaultBodyLimit, routing::get};
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -16,6 +18,13 @@ use registry::Registry;
 
 #[tokio::main]
 async fn main() {
+    if let Err(error) = run().await {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -31,7 +40,7 @@ async fn main() {
     let max_body_size_mb: usize = env_var("PEEK_MAX_BODY_SIZE_MB", "MAX_BODY_SIZE_MB")
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);
-    let max_body_size = max_body_size_mb * 1024 * 1024;
+    let max_body_size = max_body_size_mb.saturating_mul(1024 * 1024);
     let rate_limit_rpm: u32 = env_var("PEEK_RATE_LIMIT_RPM", "RATE_LIMIT_RPM")
         .and_then(|v| v.parse().ok())
         .unwrap_or(1000);
@@ -54,7 +63,7 @@ async fn main() {
         rate_limit_rpm = rate_limit_rpm,
         drain_timeout_secs = drain_timeout_secs,
         trust_proxy_headers = trust_proxy_headers,
-        "starting peek-relay"
+        "starting peek"
     );
 
     let rate_limiter = RateLimiter::new(rate_limit_rpm, Duration::from_secs(60));
@@ -67,7 +76,6 @@ async fn main() {
         rate_limiter,
     ));
 
-    // Spawn periodic rate limiter cleanup
     {
         let registry = registry.clone();
         tokio::spawn(async move {
@@ -87,18 +95,18 @@ async fn main() {
         .with_state(registry);
 
     let addr = format!("0.0.0.0:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!(addr = %addr, "listening");
 
-    // Graceful shutdown with drain timeout
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
     tokio::spawn(async move {
-        shutdown_signal().await;
+        if let Err(error) = shutdown_signal().await {
+            warn!(%error, "failed to listen for shutdown signal");
+        }
         let _ = shutdown_tx.send(true);
     });
 
-    // Force exit if drain takes too long
     let mut force_rx = shutdown_rx.clone();
     tokio::spawn(async move {
         let _ = force_rx.changed().await;
@@ -110,15 +118,15 @@ async fn main() {
 
     axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         let _ = shutdown_rx.changed().await;
     })
-    .await
-    .unwrap();
+    .await?;
 
     info!("server shut down gracefully");
+    Ok(())
 }
 
 fn env_var(primary: &str, fallback: &str) -> Option<String> {
@@ -139,26 +147,32 @@ fn env_bool(name: &str) -> Option<bool> {
         })
 }
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to listen for ctrl+c");
-    };
+async fn shutdown_signal() -> std::io::Result<()> {
+    let ctrl_c = tokio::signal::ctrl_c();
 
     #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to listen for SIGTERM")
-            .recv()
-            .await;
-    };
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
+    #[cfg(unix)]
     tokio::select! {
-        _ = ctrl_c => info!("received ctrl+c, shutting down"),
-        _ = terminate => info!("received SIGTERM, shutting down"),
+        result = ctrl_c => {
+            result?;
+            info!("received ctrl+c, shutting down");
+        }
+        _ = terminate.recv() => info!("received SIGTERM, shutting down"),
     }
+
+    #[cfg(not(unix))]
+    tokio::select! {
+        result = ctrl_c => {
+            result?;
+            info!("received ctrl+c, shutting down");
+        }
+        () = terminate => {}
+    }
+
+    Ok(())
 }
