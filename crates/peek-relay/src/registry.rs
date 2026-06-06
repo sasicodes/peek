@@ -24,6 +24,7 @@ pub struct Registry {
 pub struct TunnelConnection {
     pub write_tx: mpsc::Sender<Message>,
     pub pending: Mutex<HashMap<u32, oneshot::Sender<Vec<u8>>>>,
+    pub ws_streams: Mutex<HashMap<u32, mpsc::Sender<peek_proto::WsFrame>>>,
     pub password: Option<String>,
     next_request_id: AtomicU32,
 }
@@ -110,6 +111,7 @@ impl TunnelConnection {
         Self {
             write_tx,
             pending: Mutex::new(HashMap::new()),
+            ws_streams: Mutex::new(HashMap::new()),
             password,
             next_request_id: AtomicU32::new(1),
         }

@@ -9,6 +9,8 @@ pub enum ProtoError {
     InvalidHttp(String),
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("invalid WebSocket frame: {0}")]
+    InvalidWebSocket(String),
 }
 
 #[must_use]
@@ -106,6 +108,130 @@ pub struct DeserializedResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+const WS_MAGIC: &[u8; 3] = b"WS1";
+const WS_OPEN: u8 = 1;
+const WS_MESSAGE: u8 = 2;
+const WS_CLOSE: u8 = 3;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WsFrame {
+    Open {
+        uri: String,
+        headers: Vec<(String, String)>,
+    },
+    Message {
+        kind: WsMessageKind,
+        data: Vec<u8>,
+    },
+    Close,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WsMessageKind {
+    Text,
+    Binary,
+    Ping,
+    Pong,
+}
+
+#[must_use]
+pub fn is_ws_frame(data: &[u8]) -> bool {
+    data.starts_with(WS_MAGIC)
+}
+
+#[must_use]
+pub fn serialize_ws_open(uri: &str, headers: &[(String, String)]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(WS_MAGIC);
+    buf.push(WS_OPEN);
+    buf.extend_from_slice(uri.as_bytes());
+    buf.extend_from_slice(CRLF);
+    for (k, v) in headers {
+        buf.extend_from_slice(k.as_bytes());
+        buf.extend_from_slice(b": ");
+        buf.extend_from_slice(v.as_bytes());
+        buf.extend_from_slice(CRLF);
+    }
+    buf.extend_from_slice(CRLF);
+    buf
+}
+
+#[must_use]
+pub fn serialize_ws_message(kind: WsMessageKind, data: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(5 + data.len());
+    buf.extend_from_slice(WS_MAGIC);
+    buf.push(WS_MESSAGE);
+    buf.push(match kind {
+        WsMessageKind::Text => 1,
+        WsMessageKind::Binary => 2,
+        WsMessageKind::Ping => 3,
+        WsMessageKind::Pong => 4,
+    });
+    buf.extend_from_slice(data);
+    buf
+}
+
+#[must_use]
+pub fn serialize_ws_close() -> Vec<u8> {
+    let mut buf = Vec::with_capacity(4);
+    buf.extend_from_slice(WS_MAGIC);
+    buf.push(WS_CLOSE);
+    buf
+}
+
+pub fn deserialize_ws_frame(data: &[u8]) -> Result<WsFrame, ProtoError> {
+    if !is_ws_frame(data) || data.len() < 4 {
+        return Err(ProtoError::InvalidWebSocket("missing prefix".into()));
+    }
+
+    match data[3] {
+        WS_OPEN => deserialize_ws_open(&data[4..]),
+        WS_MESSAGE => deserialize_ws_message(&data[4..]),
+        WS_CLOSE => Ok(WsFrame::Close),
+        value => Err(ProtoError::InvalidWebSocket(format!(
+            "unknown frame type: {value}"
+        ))),
+    }
+}
+
+fn deserialize_ws_open(data: &[u8]) -> Result<WsFrame, ProtoError> {
+    let (head, _) = split_head_body(data);
+    let mut lines = head.split(|&b| b == b'\n');
+    let uri = lines
+        .next()
+        .map(strip_cr)
+        .ok_or_else(|| ProtoError::InvalidWebSocket("missing uri".into()))?;
+    let uri = String::from_utf8_lossy(uri).to_string();
+    if uri.is_empty() || !uri.starts_with('/') {
+        return Err(ProtoError::InvalidWebSocket("invalid uri".into()));
+    }
+    Ok(WsFrame::Open {
+        uri,
+        headers: parse_headers(lines),
+    })
+}
+
+fn deserialize_ws_message(data: &[u8]) -> Result<WsFrame, ProtoError> {
+    if data.is_empty() {
+        return Err(ProtoError::InvalidWebSocket("missing message kind".into()));
+    }
+    let kind = match data[0] {
+        1 => WsMessageKind::Text,
+        2 => WsMessageKind::Binary,
+        3 => WsMessageKind::Ping,
+        4 => WsMessageKind::Pong,
+        value => {
+            return Err(ProtoError::InvalidWebSocket(format!(
+                "unknown message kind: {value}"
+            )));
+        }
+    };
+    Ok(WsFrame::Message {
+        kind,
+        data: data[1..].to_vec(),
+    })
 }
 
 pub fn deserialize_response(data: &[u8]) -> Result<DeserializedResponse, ProtoError> {
@@ -283,6 +409,34 @@ mod tests {
         assert_eq!(resp.status, 204);
         assert!(resp.headers.is_empty());
         assert!(resp.body.is_empty());
+    }
+
+    #[test]
+    fn websocket_frames_roundtrip() {
+        let headers = vec![("x-test".into(), "one".into())];
+        let open = serialize_ws_open("/ws?room=1", &headers);
+        assert!(is_ws_frame(&open));
+        assert_eq!(
+            deserialize_ws_frame(&open).unwrap(),
+            WsFrame::Open {
+                uri: "/ws?room=1".into(),
+                headers
+            }
+        );
+
+        let msg = serialize_ws_message(WsMessageKind::Text, b"hello");
+        assert_eq!(
+            deserialize_ws_frame(&msg).unwrap(),
+            WsFrame::Message {
+                kind: WsMessageKind::Text,
+                data: b"hello".to_vec()
+            }
+        );
+
+        assert_eq!(
+            deserialize_ws_frame(&serialize_ws_close()).unwrap(),
+            WsFrame::Close
+        );
     }
 
     #[test]

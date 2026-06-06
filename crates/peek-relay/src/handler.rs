@@ -6,7 +6,7 @@ use axum::{
     body::Body,
     extract::{
         ConnectInfo, Request, State,
-        ws::{Message, WebSocket, WebSocketUpgrade},
+        ws::{Message, WebSocket, WebSocketUpgrade, rejection::WebSocketUpgradeRejection},
     },
     http::HeaderMap,
     response::Response,
@@ -17,7 +17,7 @@ use subtle::ConstantTimeEq;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 
-use peek_proto::{self, RegistrationRequest, RegistrationResponse};
+use peek_proto::{self, RegistrationRequest, RegistrationResponse, WsFrame, WsMessageKind};
 
 use crate::{
     pages,
@@ -155,9 +155,23 @@ async fn handle_tunnel_client(socket: WebSocket, registry: Arc<Registry>) {
         match msg {
             Message::Binary(data) => match peek_proto::decode_frame(&data) {
                 Ok((request_id, payload)) => {
-                    let mut pending = conn.pending.lock().await;
-                    if let Some(tx) = pending.remove(&request_id) {
-                        let _ = tx.send(payload.to_vec());
+                    if peek_proto::is_ws_frame(payload) {
+                        match peek_proto::deserialize_ws_frame(payload) {
+                            Ok(frame) => {
+                                let streams = conn.ws_streams.lock().await;
+                                if let Some(tx) = streams.get(&request_id) {
+                                    let _ = tx.send(frame).await;
+                                }
+                            }
+                            Err(e) => {
+                                warn!(subdomain = %subdomain, error = %e, "bad websocket frame from client");
+                            }
+                        }
+                    } else {
+                        let mut pending = conn.pending.lock().await;
+                        if let Some(tx) = pending.remove(&request_id) {
+                            let _ = tx.send(payload.to_vec());
+                        }
                     }
                 }
                 Err(e) => {
@@ -177,6 +191,7 @@ async fn handle_tunnel_client(socket: WebSocket, registry: Arc<Registry>) {
     drop(write_tx);
     let _ = writer_handle.await;
     conn.pending.lock().await.clear();
+    conn.ws_streams.lock().await.clear();
 }
 
 async fn read_registration(
@@ -246,6 +261,7 @@ fn registration_error_json(message: &'static str) -> String {
 pub async fn public_handler(
     State(registry): State<Arc<Registry>>,
     ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     mut request: Request,
 ) -> Response {
     let ip = extract_client_ip(
@@ -277,6 +293,11 @@ pub async fn public_handler(
             Err(response) => return response,
         };
     }
+
+    if let Ok(ws) = ws {
+        return handle_public_ws_upgrade(ws, request, conn, registry.max_body_size).await;
+    }
+
     let max_body_size = registry.max_body_size;
     let method = request.method().to_string();
     let uri = request.uri().to_string();
@@ -352,6 +373,149 @@ pub async fn public_handler(
             bad_gateway_page()
         }
     }
+}
+
+async fn handle_public_ws_upgrade(
+    ws: WebSocketUpgrade,
+    request: Request,
+    conn: Arc<TunnelConnection>,
+    max_message_size: usize,
+) -> Response {
+    {
+        let streams = conn.ws_streams.lock().await;
+        if streams.len() >= MAX_PENDING_PER_TUNNEL {
+            return service_unavailable_page();
+        }
+    }
+
+    let request_id = conn.next_id();
+    let uri = request.uri().to_string();
+    let protocols = requested_ws_protocols(request.headers());
+    let headers: Vec<(String, String)> = request
+        .headers()
+        .iter()
+        .filter(|(k, _)| !is_hop_by_hop_header(k.as_str()))
+        .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+        .collect();
+    let open = peek_proto::serialize_ws_open(&uri, &headers);
+    let frame = peek_proto::encode_frame(request_id, &open);
+
+    let (incoming_tx, incoming_rx) = mpsc::channel::<WsFrame>(256);
+    conn.ws_streams.lock().await.insert(request_id, incoming_tx);
+
+    if conn
+        .write_tx
+        .send(Message::Binary(frame.into()))
+        .await
+        .is_err()
+    {
+        conn.ws_streams.lock().await.remove(&request_id);
+        return bad_gateway_page();
+    }
+
+    ws.protocols(protocols)
+        .max_frame_size(max_message_size)
+        .max_message_size(max_message_size)
+        .on_upgrade(move |socket| bridge_public_ws(socket, conn, request_id, incoming_rx))
+}
+
+fn requested_ws_protocols(headers: &HeaderMap) -> Vec<String> {
+    headers
+        .get("sec-websocket-protocol")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+async fn bridge_public_ws(
+    socket: WebSocket,
+    conn: Arc<TunnelConnection>,
+    request_id: u32,
+    mut incoming_rx: mpsc::Receiver<WsFrame>,
+) {
+    let (mut public_sink, mut public_stream) = socket.split();
+    loop {
+        tokio::select! {
+            msg = public_stream.next() => {
+                let Some(Ok(msg)) = msg else {
+                    send_ws_close(&conn, request_id).await;
+                    break;
+                };
+                if !send_public_ws_message_to_tunnel(&conn, request_id, msg).await {
+                    break;
+                }
+            }
+            frame = incoming_rx.recv() => {
+                let Some(frame) = frame else {
+                    break;
+                };
+                if !send_tunnel_ws_message_to_public(&mut public_sink, frame).await {
+                    break;
+                }
+            }
+        }
+    }
+
+    conn.ws_streams.lock().await.remove(&request_id);
+}
+
+async fn send_public_ws_message_to_tunnel(
+    conn: &TunnelConnection,
+    request_id: u32,
+    msg: Message,
+) -> bool {
+    let payload = match msg {
+        Message::Text(text) => {
+            peek_proto::serialize_ws_message(WsMessageKind::Text, text.as_str().as_bytes())
+        }
+        Message::Binary(data) => peek_proto::serialize_ws_message(WsMessageKind::Binary, &data),
+        Message::Ping(data) => peek_proto::serialize_ws_message(WsMessageKind::Ping, &data),
+        Message::Pong(data) => peek_proto::serialize_ws_message(WsMessageKind::Pong, &data),
+        Message::Close(_) => peek_proto::serialize_ws_close(),
+    };
+    conn.write_tx
+        .send(Message::Binary(
+            peek_proto::encode_frame(request_id, &payload).into(),
+        ))
+        .await
+        .is_ok()
+}
+
+async fn send_tunnel_ws_message_to_public(
+    public_sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    frame: WsFrame,
+) -> bool {
+    let msg = match frame {
+        WsFrame::Message { kind, data } => match kind {
+            WsMessageKind::Text => match String::from_utf8(data) {
+                Ok(text) => Message::Text(text.into()),
+                Err(_) => return false,
+            },
+            WsMessageKind::Binary => Message::Binary(data.into()),
+            WsMessageKind::Ping => Message::Ping(data.into()),
+            WsMessageKind::Pong => Message::Pong(data.into()),
+        },
+        WsFrame::Close => Message::Close(None),
+        WsFrame::Open { .. } => return true,
+    };
+    public_sink.send(msg).await.is_ok()
+}
+
+async fn send_ws_close(conn: &TunnelConnection, request_id: u32) {
+    let payload = peek_proto::serialize_ws_close();
+    let _ = conn
+        .write_tx
+        .send(Message::Binary(
+            peek_proto::encode_frame(request_id, &payload).into(),
+        ))
+        .await;
 }
 
 async fn password_gate(

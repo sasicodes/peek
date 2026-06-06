@@ -24,3 +24,4 @@ subtle = "2"
 peek-client = { path = "../peek-client" }
 reqwest = { version = "0.13", default-features = false }
 http-body-util = "0.1"
+tokio-tungstenite = "0.29"
