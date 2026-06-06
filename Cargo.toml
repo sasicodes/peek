@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/peek-proto",
+    "crates/peek-client",
+    "crates/peek-relay",
+]
