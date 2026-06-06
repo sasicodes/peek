@@ -34,11 +34,11 @@ async fn run() -> Result<(), String> {
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--server" => server_url = Some(args.next().ok_or("--server needs a value")?),
-            "--domain" => domain = Some(args.next().ok_or("--domain needs a value")?),
-            "--token" => token = Some(args.next().ok_or("--token needs a value")?),
-            "--password" => password = Some(args.next().ok_or("--password needs a value")?),
-            "--subdomain" => subdomain = Some(args.next().ok_or("--subdomain needs a value")?),
+            "--server" => server_url = Some(next_option_value(&mut args, "--server")?),
+            "--domain" => domain = Some(next_option_value(&mut args, "--domain")?),
+            "--token" => token = Some(next_option_value(&mut args, "--token")?),
+            "--password" => password = Some(next_option_value(&mut args, "--password")?),
+            "--subdomain" => subdomain = Some(next_option_value(&mut args, "--subdomain")?),
             _ => return Err(format!("unknown option: {arg}")),
         }
     }
@@ -87,6 +87,19 @@ fn print_usage() {
     eprintln!("  PEEK_TOKEN      server token used to create a tunnel");
     eprintln!("  PEEK_AUTH_TOKEN same as PEEK_TOKEN");
     eprintln!("  PEEK_PASSWORD   require this password for visitors");
+}
+
+fn next_option_value(
+    args: &mut impl Iterator<Item = String>,
+    option: &str,
+) -> Result<String, String> {
+    let value = args
+        .next()
+        .ok_or_else(|| format!("{option} needs a value"))?;
+    if value.starts_with("--") {
+        return Err(format!("{option} needs a value"));
+    }
+    Ok(value)
 }
 
 fn parse_local_port(local: &str) -> Result<u16, String> {

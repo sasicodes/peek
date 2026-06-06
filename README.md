@@ -71,10 +71,10 @@ Options:
 
 | Option | Use |
 | --- | --- |
-| `--token change-me` | same value as `PEEK_AUTH_TOKEN` |
-| `--domain example.com` | hosted peek domain |
-| `--subdomain myapp` | use `https://myapp.example.com` |
-| `--password secret` | require this password for visitors |
+| `--token` | same value as `PEEK_AUTH_TOKEN` |
+| `--domain` | hosted peek domain, like `example.com` |
+| `--subdomain` | public URL name, like `myapp` |
+| `--password` | require a password for visitors |
 
 `--token` creates the tunnel. `--password` protects the public URL and is optional.
 
