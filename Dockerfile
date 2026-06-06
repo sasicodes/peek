@@ -11,6 +11,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/peek-relay /usr/local/bin/peek-relay
-ENV RELAY_DOMAIN=localhost
+ENV PEEK_DOMAIN=localhost
 EXPOSE 8080
 CMD ["peek-relay"]

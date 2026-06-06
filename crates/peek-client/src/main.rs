@@ -26,7 +26,9 @@ async fn run() -> Result<(), String> {
 
     let mut server_url = env::var("PEEK_SERVER").ok();
     let mut domain = env::var("PEEK_DOMAIN").ok();
-    let mut token = env::var("PEEK_TOKEN").ok();
+    let mut token = env::var("PEEK_TOKEN")
+        .ok()
+        .or_else(|| env::var("PEEK_AUTH_TOKEN").ok());
     let mut password = env::var("PEEK_PASSWORD").ok();
     let mut subdomain = None;
 
@@ -84,6 +86,7 @@ fn print_usage() {
     eprintln!("  PEEK_SERVER");
     eprintln!("  PEEK_DOMAIN");
     eprintln!("  PEEK_TOKEN");
+    eprintln!("  PEEK_AUTH_TOKEN");
     eprintln!("  PEEK_PASSWORD");
 }
 

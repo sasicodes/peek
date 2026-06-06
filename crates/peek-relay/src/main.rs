@@ -23,31 +23,27 @@ async fn main() {
         )
         .init();
 
-    let port = std::env::var("PORT").unwrap_or_else(|_| "8080".into());
-    let domain = std::env::var("RELAY_DOMAIN").unwrap_or_else(|_| "localhost".into());
-    let auth_token = std::env::var("RELAY_AUTH_TOKEN").ok();
-    let max_tunnels: usize = std::env::var("MAX_TUNNELS")
-        .ok()
+    let port = env_var("PORT", "").unwrap_or_else(|| "8080".into());
+    let domain = env_var("PEEK_DOMAIN", "RELAY_DOMAIN").unwrap_or_else(|| "localhost".into());
+    let auth_token = env_var("PEEK_AUTH_TOKEN", "RELAY_AUTH_TOKEN");
+    let max_tunnels: usize = env_var("PEEK_MAX_TUNNELS", "MAX_TUNNELS")
         .and_then(|v| v.parse().ok())
         .unwrap_or(10_000);
-    let max_body_size_mb: usize = std::env::var("MAX_BODY_SIZE_MB")
-        .ok()
+    let max_body_size_mb: usize = env_var("PEEK_MAX_BODY_SIZE_MB", "MAX_BODY_SIZE_MB")
         .and_then(|v| v.parse().ok())
         .unwrap_or(10);
     let max_body_size = max_body_size_mb * 1024 * 1024;
-    let rate_limit_rpm: u32 = std::env::var("RATE_LIMIT_RPM")
-        .ok()
+    let rate_limit_rpm: u32 = env_var("PEEK_RATE_LIMIT_RPM", "RATE_LIMIT_RPM")
         .and_then(|v| v.parse().ok())
         .unwrap_or(1000);
-    let drain_timeout_secs: u64 = std::env::var("DRAIN_TIMEOUT_SECS")
-        .ok()
+    let drain_timeout_secs: u64 = env_var("PEEK_DRAIN_TIMEOUT_SECS", "DRAIN_TIMEOUT_SECS")
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
 
     if auth_token.is_some() {
         info!("authentication enabled");
     } else {
-        info!("authentication disabled (set RELAY_AUTH_TOKEN to enable)");
+        info!("authentication disabled (set PEEK_AUTH_TOKEN to enable)");
     }
 
     info!(
@@ -119,6 +115,14 @@ async fn main() {
         .unwrap();
 
     info!("server shut down gracefully");
+}
+
+fn env_var(primary: &str, fallback: &str) -> Option<String> {
+    std::env::var(primary).ok().or_else(|| {
+        (!fallback.is_empty())
+            .then(|| std::env::var(fallback).ok())
+            .flatten()
+    })
 }
 
 async fn shutdown_signal() {

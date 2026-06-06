@@ -14,8 +14,8 @@ localhost:3000 -> your peek server -> public URL
 
 ```bash
 docker run -p 8080:8080 \
-  -e RELAY_DOMAIN=example.com \
-  -e RELAY_AUTH_TOKEN=change-me \
+  -e PEEK_DOMAIN=example.com \
+  -e PEEK_AUTH_TOKEN=change-me \
   ghcr.io/sasicodes/peek:latest
 ```
 
@@ -40,7 +40,7 @@ cargo install --git https://github.com/sasicodes/peek peek-client
 
 ```bash
 export PEEK_DOMAIN=example.com
-export PEEK_TOKEN=change-me
+export PEEK_AUTH_TOKEN=change-me
 
 peek localhost:3000
 ```

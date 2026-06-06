@@ -32,7 +32,7 @@ Visitor HTTP request
 
 1. The client opens a WebSocket connection to `/tunnel`.
 2. The client sends a JSON registration request with optional subdomain, auth token, and tunnel password.
-3. The server validates the auth token when `RELAY_AUTH_TOKEN` is set.
+3. The server validates the auth token when `PEEK_AUTH_TOKEN` is set.
 4. The server requires a tunnel password.
 5. The server assigns a subdomain and stores the tunnel connection.
 6. The server responds with the public URL.
@@ -80,8 +80,8 @@ When a visitor opens a protected tunnel URL:
 
 ## Limits
 
-- WebSocket frames are capped by `MAX_BODY_SIZE_MB`.
-- HTTP request bodies are capped by `MAX_BODY_SIZE_MB`.
+- WebSocket frames are capped by `PEEK_MAX_BODY_SIZE_MB`.
+- HTTP request bodies are capped by `PEEK_MAX_BODY_SIZE_MB`.
 - Each tunnel has a maximum number of pending requests.
 - Tunnel responses time out after 30 seconds.
 - The server enforces a maximum active tunnel count.
