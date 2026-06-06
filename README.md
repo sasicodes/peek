@@ -26,12 +26,6 @@ example.com
 *.example.com
 ```
 
-The tunnel server is:
-
-```text
-wss://example.com/tunnel
-```
-
 ## Run
 
 ```bash
