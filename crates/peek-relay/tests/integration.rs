@@ -137,6 +137,31 @@ async fn start_local_server() -> (SocketAddr, &'static str) {
     (addr, expected_body)
 }
 
+async fn login_cookie(relay_addr: SocketAddr, host: &str, password: &str) -> String {
+    let http_client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let resp = http_client
+        .post(format!("http://{relay_addr}/__peek_auth"))
+        .header("host", host)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(format!("password={password}"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 303);
+    resp.headers()
+        .get("set-cookie")
+        .and_then(|value| value.to_str().ok())
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
 #[tokio::test]
 async fn test_tunnel_end_to_end() {
     let (local_addr, expected_body) = start_local_server().await;
@@ -292,6 +317,88 @@ async fn test_websocket_tunnel_forwards_headers() {
     let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
     let msg = socket.next().await.unwrap().unwrap();
     assert_eq!(msg.into_text().unwrap(), "secret");
+
+    handle.close().await;
+}
+
+#[tokio::test]
+async fn test_password_protected_websocket_rejects_cross_origin() {
+    let (local_addr, _) = start_local_server().await;
+    let relay_addr = start_relay("test-ws-origin.local").await;
+    let host = "victim.test-ws-origin.local";
+
+    let client = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel"))
+        .unwrap()
+        .with_password("s3cret".into());
+    let handle = client
+        .connect_with_subdomain(local_addr.port(), Some("victim".into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let cookie = login_cookie(relay_addr, host, "s3cret").await;
+    let mut request = format!("ws://{relay_addr}/ws")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert("host", host.parse().unwrap());
+    request.headers_mut().insert(
+        "origin",
+        "https://attacker.test-ws-origin.local".parse().unwrap(),
+    );
+    request
+        .headers_mut()
+        .insert("cookie", cookie.parse().unwrap());
+
+    let err = match tokio_tungstenite::connect_async(request).await {
+        Ok(_) => panic!("expected HTTP 403 handshake failure"),
+        Err(err) => err,
+    };
+    match err {
+        tokio_tungstenite::tungstenite::Error::Http(response) => {
+            assert_eq!(response.status().as_u16(), 403);
+        }
+        other => panic!("expected HTTP 403 handshake failure, got {other}"),
+    }
+
+    handle.close().await;
+}
+
+#[tokio::test]
+async fn test_password_protected_websocket_allows_same_origin() {
+    let (local_addr, _) = start_local_server().await;
+    let relay_addr = start_relay("test-ws-same-origin.local").await;
+    let host = "victim.test-ws-same-origin.local";
+
+    let client = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel"))
+        .unwrap()
+        .with_password("s3cret".into());
+    let handle = client
+        .connect_with_subdomain(local_addr.port(), Some("victim".into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let cookie = login_cookie(relay_addr, host, "s3cret").await;
+    let mut request = format!("ws://{relay_addr}/ws")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert("host", host.parse().unwrap());
+    request
+        .headers_mut()
+        .insert("origin", format!("https://{host}").parse().unwrap());
+    request
+        .headers_mut()
+        .insert("cookie", cookie.parse().unwrap());
+
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            "hello".into(),
+        ))
+        .await
+        .unwrap();
+    let msg = socket.next().await.unwrap().unwrap();
+    assert_eq!(msg.into_text().unwrap(), "hello");
 
     handle.close().await;
 }

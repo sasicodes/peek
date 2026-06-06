@@ -8,7 +8,7 @@ use axum::{
         ConnectInfo, Request, State,
         ws::{Message, WebSocket, WebSocketUpgrade, rejection::WebSocketUpgradeRejection},
     },
-    http::HeaderMap,
+    http::{HeaderMap, Uri, uri::Authority},
     response::Response,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -287,6 +287,7 @@ pub async fn public_handler(
         return not_found_page();
     };
 
+    let password_protected = conn.password.is_some();
     if let Some(ref tunnel_password) = conn.password {
         request = match password_gate(request, &subdomain, tunnel_password).await {
             Ok(request) => request,
@@ -295,6 +296,9 @@ pub async fn public_handler(
     }
 
     if let Ok(ws) = ws {
+        if password_protected && !websocket_origin_matches_host(request.headers(), &host) {
+            return forbidden_page();
+        }
         return handle_public_ws_upgrade(ws, request, conn, registry.max_body_size).await;
     }
 
@@ -432,6 +436,70 @@ fn requested_ws_protocols(headers: &HeaderMap) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn websocket_origin_matches_host(headers: &HeaderMap, request_host: &str) -> bool {
+    let mut origins = headers.get_all("origin").iter();
+    let Some(origin) = origins.next() else {
+        return true;
+    };
+    if origins.next().is_some() {
+        return false;
+    }
+
+    let Ok(origin) = origin.to_str() else {
+        return false;
+    };
+    origin_matches_host(origin, request_host)
+}
+
+fn origin_matches_host(origin: &str, request_host: &str) -> bool {
+    let Ok(origin_uri) = origin.parse::<Uri>() else {
+        return false;
+    };
+    let Some(scheme) = origin_uri.scheme_str() else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return false;
+    }
+    let Some(origin_authority) = origin_uri.authority() else {
+        return false;
+    };
+    let Ok(request_authority) = request_host.parse::<Authority>() else {
+        return false;
+    };
+
+    if !origin_authority
+        .host()
+        .eq_ignore_ascii_case(request_authority.host())
+    {
+        return false;
+    }
+
+    match request_authority.port_u16() {
+        Some(request_port) => origin_effective_port(scheme, origin_authority) == Some(request_port),
+        None => match origin_authority.port_u16() {
+            Some(port) => Some(port) == default_port_for_scheme(scheme),
+            None => true,
+        },
+    }
+}
+
+fn origin_effective_port(scheme: &str, authority: &Authority) -> Option<u16> {
+    authority
+        .port_u16()
+        .or_else(|| default_port_for_scheme(scheme))
+}
+
+fn default_port_for_scheme(scheme: &str) -> Option<u16> {
+    if scheme.eq_ignore_ascii_case("http") {
+        Some(80)
+    } else if scheme.eq_ignore_ascii_case("https") {
+        Some(443)
+    } else {
+        None
+    }
 }
 
 async fn bridge_public_ws(
@@ -670,6 +738,12 @@ fn not_found_page() -> Response {
     resp
 }
 
+fn forbidden_page() -> Response {
+    let mut resp = status_page("Forbidden");
+    *resp.status_mut() = axum::http::StatusCode::FORBIDDEN;
+    resp
+}
+
 fn bad_gateway_page() -> Response {
     let mut resp = status_page("Bad gateway");
     *resp.status_mut() = axum::http::StatusCode::BAD_GATEWAY;
@@ -752,6 +826,35 @@ mod tests {
             extract_client_ip(&headers, peer_ip, true),
             "10.0.0.1".parse::<IpAddr>().unwrap()
         );
+    }
+
+    #[test]
+    fn test_origin_matches_host() {
+        assert!(origin_matches_host(
+            "https://a8f3k2.example.com",
+            "a8f3k2.example.com"
+        ));
+        assert!(origin_matches_host(
+            "https://a8f3k2.example.com:443",
+            "a8f3k2.example.com"
+        ));
+        assert!(origin_matches_host(
+            "http://a8f3k2.example.com:8080",
+            "a8f3k2.example.com:8080"
+        ));
+        assert!(origin_matches_host(
+            "https://A8F3K2.example.com",
+            "a8f3k2.example.com"
+        ));
+        assert!(!origin_matches_host(
+            "https://attacker.example.com",
+            "a8f3k2.example.com"
+        ));
+        assert!(!origin_matches_host(
+            "https://a8f3k2.example.com:444",
+            "a8f3k2.example.com"
+        ));
+        assert!(!origin_matches_host("null", "a8f3k2.example.com"));
     }
 
     #[test]
