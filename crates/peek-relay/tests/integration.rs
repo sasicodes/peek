@@ -2,9 +2,16 @@ use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use axum::{Router, routing::get};
+use axum::{
+    Router,
+    extract::ws::{Message, WebSocketUpgrade},
+    http::HeaderMap,
+    routing::get,
+};
+use futures_util::{SinkExt, StreamExt};
 use peek_relay::{AppConfig, build_app};
 use tokio::net::TcpListener;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 async fn start_relay(domain: &str) -> SocketAddr {
     let app = build_app(AppConfig {
@@ -76,6 +83,48 @@ async fn start_local_server() -> (SocketAddr, &'static str) {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 "slow response"
             }),
+        )
+        .route(
+            "/ws",
+            get(|ws: WebSocketUpgrade| async move {
+                ws.on_upgrade(|socket| async move {
+                    let (mut sink, mut stream) = socket.split();
+                    while let Some(Ok(msg)) = stream.next().await {
+                        match msg {
+                            Message::Text(_) | Message::Binary(_) | Message::Ping(_) => {
+                                if sink.send(msg).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Message::Close(_) => break,
+                            Message::Pong(_) => {}
+                        }
+                    }
+                })
+            }),
+        )
+        .route(
+            "/ws-header",
+            get(|headers: HeaderMap, ws: WebSocketUpgrade| async move {
+                let header = headers
+                    .get("x-ws-token")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                ws.on_upgrade(|socket| async move {
+                    let (mut sink, _) = socket.split();
+                    let _ = sink.send(Message::Text(header.into())).await;
+                })
+            }),
+        )
+        .route(
+            "/ws-protocol",
+            get(|ws: WebSocketUpgrade| async move {
+                ws.protocols(["chat"]).on_upgrade(|socket| async move {
+                    let (mut sink, _) = socket.split();
+                    let _ = sink.send(Message::Text("protocol ok".into())).await;
+                })
+            }),
         );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -125,6 +174,124 @@ async fn test_tunnel_end_to_end() {
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert_eq!(body, "Echo: test data");
+
+    handle.close().await;
+}
+
+#[tokio::test]
+async fn test_websocket_tunnel_selects_subprotocol() {
+    let (local_addr, _) = start_local_server().await;
+    let relay_addr = start_relay("test-ws-protocol.local").await;
+
+    let client = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel")).unwrap();
+    let handle = client
+        .connect_with_subdomain(local_addr.port(), Some("testsubdomain".into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut request = format!("ws://{relay_addr}/ws-protocol")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "host",
+        "testsubdomain.test-ws-protocol.local".parse().unwrap(),
+    );
+    request
+        .headers_mut()
+        .insert("sec-websocket-protocol", "chat".parse().unwrap());
+
+    let (mut socket, response) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(
+        response
+            .headers()
+            .get("sec-websocket-protocol")
+            .and_then(|value| value.to_str().ok()),
+        Some("chat")
+    );
+    let msg = socket.next().await.unwrap().unwrap();
+    assert_eq!(msg.into_text().unwrap(), "protocol ok");
+
+    handle.close().await;
+}
+
+#[tokio::test]
+async fn test_websocket_tunnel_echo() {
+    let (local_addr, expected_body) = start_local_server().await;
+    let relay_addr = start_relay("test-ws.local").await;
+
+    let client = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel")).unwrap();
+    let handle = client
+        .connect_with_subdomain(local_addr.port(), Some("testsubdomain".into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let http_client = reqwest::Client::new();
+    let resp = http_client
+        .get(format!("http://{relay_addr}/"))
+        .header("host", "testsubdomain.test-ws.local")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), expected_body);
+
+    let mut request = format!("ws://{relay_addr}/ws")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("host", "testsubdomain.test-ws.local".parse().unwrap());
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            "hello".into(),
+        ))
+        .await
+        .unwrap();
+    let msg = socket.next().await.unwrap().unwrap();
+    assert_eq!(msg.into_text().unwrap(), "hello");
+
+    socket
+        .send(tokio_tungstenite::tungstenite::Message::Binary(
+            vec![1, 2, 3].into(),
+        ))
+        .await
+        .unwrap();
+    let msg = socket.next().await.unwrap().unwrap();
+    assert_eq!(msg.into_data(), vec![1, 2, 3]);
+
+    handle.close().await;
+}
+
+#[tokio::test]
+async fn test_websocket_tunnel_forwards_headers() {
+    let (local_addr, _) = start_local_server().await;
+    let relay_addr = start_relay("test-ws-headers.local").await;
+
+    let client = peek_client::TunnelClient::new(&format!("ws://{relay_addr}/tunnel")).unwrap();
+    let handle = client
+        .connect_with_subdomain(local_addr.port(), Some("testsubdomain".into()))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut request = format!("ws://{relay_addr}/ws-header")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert(
+        "host",
+        "testsubdomain.test-ws-headers.local".parse().unwrap(),
+    );
+    request
+        .headers_mut()
+        .insert("x-ws-token", "secret".parse().unwrap());
+
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+    let msg = socket.next().await.unwrap().unwrap();
+    assert_eq!(msg.into_text().unwrap(), "secret");
 
     handle.close().await;
 }
