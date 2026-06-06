@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+mod pages;
+
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
@@ -251,7 +253,7 @@ async fn handle_request(
         Ok(r) => r,
         Err(e) => {
             warn!(error = %e, "failed to deserialize request");
-            send_error_response(request_id, 400, "Bad Request", write_tx).await;
+            send_error_response(request_id, 400, &pages::status("Bad Request"), write_tx).await;
             return;
         }
     };
@@ -259,7 +261,7 @@ async fn handle_request(
     let local_url = format!("http://127.0.0.1:{port}{}", req.uri);
 
     let Ok(method) = req.method.parse::<reqwest::Method>() else {
-        send_error_response(request_id, 400, "Invalid method", write_tx).await;
+        send_error_response(request_id, 400, &pages::status("Invalid method"), write_tx).await;
         return;
     };
 
@@ -280,33 +282,12 @@ async fn handle_request(
         Ok(r) => r,
         Err(e) if e.is_timeout() => {
             warn!(error = %e, url = %local_url, "local server timed out");
-            send_error_response(
-                request_id,
-                504,
-                &format!(
-                    "<html><body style=\"font-family:system-ui;text-align:center;padding:40px\">\
-                     <h1>504 Gateway Timeout</h1>\
-                     <p>localhost:{port} did not respond within 30 seconds</p></body></html>"
-                ),
-                write_tx,
-            )
-            .await;
+            send_error_response(request_id, 504, &pages::gateway_timeout(port), write_tx).await;
             return;
         }
         Err(e) => {
             warn!(error = %e, url = %local_url, "failed to reach local server");
-            send_error_response(
-                request_id,
-                502,
-                &format!(
-                    "<html><body style=\"font-family:system-ui;text-align:center;padding:40px\">\
-                     <h1>502 Bad Gateway</h1>\
-                     <p>Could not connect to localhost:{port}</p>\
-                     <p style=\"color:#999\">{e}</p></body></html>"
-                ),
-                write_tx,
-            )
-            .await;
+            send_error_response(request_id, 502, &pages::bad_gateway(port, &e), write_tx).await;
             return;
         }
     };

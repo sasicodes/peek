@@ -23,6 +23,7 @@ async fn run() -> Result<(), String> {
 
     let local = args.next().ok_or("missing local address")?;
     let port = parse_local_port(&local)?;
+    let local_url = local_url(&local, port);
 
     let mut server_url = env::var("PEEK_SERVER").ok();
     let mut domain = env::var("PEEK_DOMAIN").ok();
@@ -59,7 +60,7 @@ async fn run() -> Result<(), String> {
         .await
         .map_err(|error| error.to_string())?;
 
-    println!("{}", handle.url());
+    print_tunnel_summary(&local_url, handle.url());
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| error.to_string())?;
@@ -123,4 +124,64 @@ fn parse_local_port(local: &str) -> Result<u16, String> {
     }
 
     Err("local address must look like localhost:3000".into())
+}
+
+fn local_url(local: &str, port: u16) -> String {
+    if local.contains("://") {
+        return local.to_string();
+    }
+
+    if local.parse::<u16>().is_ok() {
+        return format!("http://localhost:{port}");
+    }
+
+    format!("http://{local}")
+}
+
+fn print_tunnel_summary(local_url: &str, public_url: &str) {
+    let label_width = "Public URL".len();
+    let value_width = local_url.len().max(public_url.len());
+    let border = format!(
+        "+{}+{}+",
+        "-".repeat(label_width + 2),
+        "-".repeat(value_width + 2)
+    );
+
+    println!();
+    println!("Tunnel ready");
+    println!();
+    println!("{border}");
+    println!(
+        "| {:label_width$} | {:value_width$} |",
+        "Local URL", local_url
+    );
+    println!(
+        "| {:label_width$} | {:value_width$} |",
+        "Public URL", public_url
+    );
+    println!("{border}");
+    println!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::local_url;
+
+    #[test]
+    fn local_url_adds_http_to_host_port() {
+        assert_eq!(local_url("localhost:3000", 3000), "http://localhost:3000");
+    }
+
+    #[test]
+    fn local_url_uses_localhost_for_port_only() {
+        assert_eq!(local_url("3000", 3000), "http://localhost:3000");
+    }
+
+    #[test]
+    fn local_url_keeps_existing_scheme() {
+        assert_eq!(
+            local_url("https://localhost:3000", 3000),
+            "https://localhost:3000"
+        );
+    }
 }

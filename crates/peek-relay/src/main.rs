@@ -1,4 +1,5 @@
 mod handler;
+mod pages;
 mod rate_limit;
 mod registry;
 

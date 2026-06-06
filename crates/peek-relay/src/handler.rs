@@ -9,7 +9,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::HeaderMap,
-    response::{Html, IntoResponse, Response},
+    response::Response,
 };
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
@@ -19,7 +19,10 @@ use tracing::{error, info, warn};
 
 use peek_proto::{self, RegistrationRequest, RegistrationResponse};
 
-use crate::registry::{MAX_PENDING_PER_TUNNEL, Registry, TunnelConnection};
+use crate::{
+    pages,
+    registry::{MAX_PENDING_PER_TUNNEL, Registry, TunnelConnection},
+};
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
@@ -481,31 +484,8 @@ fn generate_auth_cookie(password: &str, subdomain: &str) -> String {
     hex::encode(mac.finalize().into_bytes())
 }
 
-fn password_page(subdomain: &str, error: Option<&str>) -> Response {
-    let error_html = error.map_or_else(String::new, |msg| {
-        format!(r#"<p style="color:#b42318;margin:0 0 14px;font-size:14px">{msg}</p>"#)
-    });
-    let html = format!(
-        r#"<!DOCTYPE html>
-<html><head>
-<title>Password required - {subdomain}</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-</head>
-<body style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#faf7f2;color:#171717">
-<main style="width:min(420px,calc(100% - 32px));text-align:center">
-<h1 style="margin:0 0 18px;font-size:24px;font-weight:650;letter-spacing:0">Password required</h1>
-{error_html}
-<form method="POST" action="/__peek_auth" style="display:flex;gap:8px">
-<input type="password" name="password" placeholder="Enter password" required autofocus
-  style="min-width:0;flex:1;padding:12px 14px;border:1px solid #ded8cf;border-radius:10px;font-size:16px;background:white;color:#171717;box-sizing:border-box;outline:none">
-<button type="submit"
-  style="padding:12px 16px;background:#171717;color:white;border:0;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer">
-  Continue
-</button>
-</form>
-</main></body></html>"#
-    );
-    Html(html).into_response()
+fn password_page(_subdomain: &str, error: Option<&str>) -> Response {
+    pages::password(error)
 }
 
 fn extract_subdomain(host: &str, domain: &str) -> Option<String> {
@@ -557,18 +537,7 @@ fn service_unavailable_page() -> Response {
 }
 
 fn status_page(message: &str) -> Response {
-    Html(format!(
-        r#"<!DOCTYPE html>
-<html><head>
-<title>{message}</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
-</head>
-<body style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#faf7f2;color:#171717">
-<main style="width:min(420px,calc(100% - 32px));text-align:center">
-<h1 style="margin:0;font-size:24px;font-weight:650;letter-spacing:0">{message}</h1>
-</main></body></html>"#
-    ))
-    .into_response()
+    pages::status(message)
 }
 
 #[cfg(test)]

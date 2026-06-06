@@ -1024,7 +1024,7 @@ dependencies = [
 
 [[package]]
 name = "peek-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "futures-util",
  "peek-proto",
@@ -1039,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "peek-proto"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -1048,7 +1048,7 @@ dependencies = [
 
 [[package]]
 name = "peek-relay"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "futures-util",
