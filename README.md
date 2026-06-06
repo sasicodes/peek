@@ -10,7 +10,11 @@ localhost:3000 -> your peek server -> public URL
 
 ## Host
 
-[ghcr.io/sasicodes/peek](https://github.com/sasicodes/peek/pkgs/container/peek)
+Container image:
+
+```text
+ghcr.io/sasicodes/peek:latest
+```
 
 ```bash
 docker run -p 8080:8080 \
