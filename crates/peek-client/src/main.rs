@@ -46,14 +46,12 @@ async fn run() -> Result<(), String> {
     let server_url = server_url
         .or_else(|| domain.map(|domain| format!("wss://{domain}/tunnel")))
         .ok_or("missing --server, --domain, PEEK_SERVER, or PEEK_DOMAIN")?;
-    let password = password.unwrap_or_else(generate_password);
-    let visitor_password = password.clone();
-
-    let mut client = TunnelClient::new(&server_url)
-        .map_err(|error| error.to_string())?
-        .with_password(password);
+    let mut client = TunnelClient::new(&server_url).map_err(|error| error.to_string())?;
     if let Some(token) = token {
         client = client.with_token(token);
+    }
+    if let Some(password) = password {
+        client = client.with_password(password);
     }
 
     let handle = client
@@ -62,7 +60,6 @@ async fn run() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     println!("{}", handle.url());
-    println!("password: {visitor_password}");
     tokio::signal::ctrl_c()
         .await
         .map_err(|error| error.to_string())?;
@@ -78,18 +75,18 @@ fn print_usage() {
     eprintln!("  peek localhost:3000 --domain example.com --token change-me");
     eprintln!();
     eprintln!("options:");
-    eprintln!("  --server <url>");
-    eprintln!("  --domain <domain>");
-    eprintln!("  --token <token>");
-    eprintln!("  --password <password>");
-    eprintln!("  --subdomain <name>");
+    eprintln!("  --server <url>        full WebSocket URL, like wss://example.com/tunnel");
+    eprintln!("  --domain <domain>     hosted peek domain, like example.com");
+    eprintln!("  --token <token>       server token used to create a tunnel");
+    eprintln!("  --password <password> require this password for visitors");
+    eprintln!("  --subdomain <name>    public URL name, like https://name.example.com");
     eprintln!();
     eprintln!("environment:");
-    eprintln!("  PEEK_SERVER");
-    eprintln!("  PEEK_DOMAIN");
-    eprintln!("  PEEK_TOKEN");
-    eprintln!("  PEEK_AUTH_TOKEN");
-    eprintln!("  PEEK_PASSWORD");
+    eprintln!("  PEEK_SERVER     full WebSocket URL");
+    eprintln!("  PEEK_DOMAIN     hosted peek domain");
+    eprintln!("  PEEK_TOKEN      server token used to create a tunnel");
+    eprintln!("  PEEK_AUTH_TOKEN same as PEEK_TOKEN");
+    eprintln!("  PEEK_PASSWORD   require this password for visitors");
 }
 
 fn parse_local_port(local: &str) -> Result<u16, String> {
@@ -113,8 +110,4 @@ fn parse_local_port(local: &str) -> Result<u16, String> {
     }
 
     Err("local address must look like localhost:3000".into())
-}
-
-fn generate_password() -> String {
-    format!("peek-{:016x}", rand::random::<u64>())
 }

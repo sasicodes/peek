@@ -33,7 +33,14 @@ async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let port = env_var("PORT", "").unwrap_or_else(|| "8080".into());
     let domain = env_var("PEEK_DOMAIN", "RELAY_DOMAIN").unwrap_or_else(|| "localhost".into());
-    let auth_token = env_var("PEEK_AUTH_TOKEN", "RELAY_AUTH_TOKEN");
+    let auth_token = env_var("PEEK_AUTH_TOKEN", "RELAY_AUTH_TOKEN")
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "PEEK_AUTH_TOKEN is required",
+            )
+        })?;
     let max_tunnels: usize = env_var("PEEK_MAX_TUNNELS", "MAX_TUNNELS")
         .and_then(|v| v.parse().ok())
         .unwrap_or(10_000);
@@ -49,11 +56,7 @@ async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         .unwrap_or(30);
     let trust_proxy_headers = env_bool("PEEK_TRUST_PROXY_HEADERS").unwrap_or(false);
 
-    if auth_token.is_some() {
-        info!("authentication enabled");
-    } else {
-        info!("authentication disabled (set PEEK_AUTH_TOKEN to enable)");
-    }
+    info!("authentication enabled");
 
     info!(
         port = %port,
@@ -69,7 +72,7 @@ async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     let rate_limiter = RateLimiter::new(rate_limit_rpm, Duration::from_secs(60));
     let registry = Arc::new(Registry::new(
         domain,
-        auth_token,
+        Some(auth_token),
         max_tunnels,
         max_body_size,
         trust_proxy_headers,

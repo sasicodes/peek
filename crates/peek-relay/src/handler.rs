@@ -77,19 +77,7 @@ async fn handle_tunnel_client(socket: WebSocket, registry: Arc<Registry>) {
         return;
     }
 
-    let tunnel_password = match reg_req.password {
-        Some(ref p) if !p.is_empty() => p.clone(),
-        _ => {
-            warn!("tunnel registration rejected: password required");
-            send_registration_error(
-                &mut sink,
-                peek_proto::close_codes::AUTH_FAILED,
-                "tunnel password is required",
-            )
-            .await;
-            return;
-        }
-    };
+    let tunnel_password = reg_req.password.filter(|password| !password.is_empty());
 
     let subdomain = match choose_subdomain(&registry, reg_req.subdomain.as_deref()).await {
         Ok(subdomain) => subdomain,
@@ -111,10 +99,7 @@ async fn handle_tunnel_client(socket: WebSocket, registry: Arc<Registry>) {
         let _ = futures_util::SinkExt::close(&mut sink).await;
     });
 
-    let conn = Arc::new(TunnelConnection::new(
-        write_tx.clone(),
-        Some(tunnel_password),
-    ));
+    let conn = Arc::new(TunnelConnection::new(write_tx.clone(), tunnel_password));
 
     if !registry.register(subdomain.clone(), conn.clone()).await {
         warn!("tunnel registration rejected: server at capacity");
@@ -498,28 +483,27 @@ fn generate_auth_cookie(password: &str, subdomain: &str) -> String {
 
 fn password_page(subdomain: &str, error: Option<&str>) -> Response {
     let error_html = error.map_or_else(String::new, |msg| {
-        format!(r#"<p style="color:#e53e3e;margin-bottom:16px">{msg}</p>"#)
+        format!(r#"<p style="color:#b42318;margin:0 0 14px;font-size:14px">{msg}</p>"#)
     });
     let html = format!(
         r#"<!DOCTYPE html>
 <html><head>
-<title>Password Required — {subdomain}</title>
+<title>Password required - {subdomain}</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 </head>
-<body style="font-family:system-ui,-apple-system,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5">
-<div style="background:white;padding:40px;border-radius:12px;box-shadow:0 2px 8px rgba(0,0,0,0.08);max-width:360px;width:100%;text-align:center">
-<h2 style="margin:0 0 8px">🔒 Password Required</h2>
-<p style="color:#666;margin:0 0 24px;font-size:14px">This tunnel is protected</p>
+<body style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#faf7f2;color:#171717">
+<main style="width:min(420px,calc(100% - 32px));text-align:center">
+<h1 style="margin:0 0 18px;font-size:24px;font-weight:650;letter-spacing:0">Password required</h1>
 {error_html}
-<form method="POST" action="/__peek_auth">
+<form method="POST" action="/__peek_auth" style="display:flex;gap:8px">
 <input type="password" name="password" placeholder="Enter password" required autofocus
-  style="width:100%;padding:12px;border:1px solid #ddd;border-radius:8px;font-size:16px;box-sizing:border-box;margin-bottom:12px">
+  style="min-width:0;flex:1;padding:12px 14px;border:1px solid #ded8cf;border-radius:10px;font-size:16px;background:white;color:#171717;box-sizing:border-box;outline:none">
 <button type="submit"
-  style="width:100%;padding:12px;background:#111;color:white;border:none;border-radius:8px;font-size:16px;cursor:pointer">
+  style="padding:12px 16px;background:#171717;color:white;border:0;border-radius:10px;font-size:16px;font-weight:600;cursor:pointer">
   Continue
 </button>
 </form>
-</div></body></html>"#
+</main></body></html>"#
     );
     Html(html).into_response()
 }
@@ -537,93 +521,54 @@ fn extract_subdomain(host: &str, domain: &str) -> Option<String> {
 }
 
 fn not_found_page() -> Response {
-    let mut resp = Html(
-        r#"<!DOCTYPE html>
-<html><head><title>Tunnel Not Found</title></head>
-<body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5">
-<div style="text-align:center">
-<h2>Tunnel Not Found</h2>
-<p style="color:#666">This tunnel doesn't exist or has been disconnected.</p>
-</div></body></html>"#,
-    )
-    .into_response();
+    let mut resp = status_page("Not found");
     *resp.status_mut() = axum::http::StatusCode::NOT_FOUND;
     resp
 }
 
 fn bad_gateway_page() -> Response {
-    let mut resp = Html(
-        r#"<!DOCTYPE html>
-<html><head><title>Bad Gateway</title></head>
-<body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5">
-<div style="text-align:center">
-<h2>502 Bad Gateway</h2>
-<p style="color:#666">The tunnel client is unreachable.</p>
-</div></body></html>"#,
-    )
-    .into_response();
+    let mut resp = status_page("Bad gateway");
     *resp.status_mut() = axum::http::StatusCode::BAD_GATEWAY;
     resp
 }
 
 fn gateway_timeout_page() -> Response {
-    let mut resp = Html(
-        r#"<!DOCTYPE html>
-<html><head><title>Gateway Timeout</title></head>
-<body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5">
-<div style="text-align:center">
-<h2>504 Gateway Timeout</h2>
-<p style="color:#666">The local server didn't respond in time.</p>
-</div></body></html>"#,
-    )
-    .into_response();
+    let mut resp = status_page("Gateway timeout");
     *resp.status_mut() = axum::http::StatusCode::GATEWAY_TIMEOUT;
     resp
 }
 
 fn payload_too_large_page() -> Response {
-    let mut resp = Html(
-        r#"<!DOCTYPE html>
-<html><head><title>Payload Too Large</title></head>
-<body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5">
-<div style="text-align:center">
-<h2>413 Payload Too Large</h2>
-<p style="color:#666">Request body exceeds the size limit.</p>
-</div></body></html>"#,
-    )
-    .into_response();
+    let mut resp = status_page("Payload too large");
     *resp.status_mut() = axum::http::StatusCode::PAYLOAD_TOO_LARGE;
     resp
 }
 
 fn too_many_requests_page() -> Response {
-    let mut resp = Html(
-        r#"<!DOCTYPE html>
-<html><head><title>Too Many Requests</title></head>
-<body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5">
-<div style="text-align:center">
-<h2>429 Too Many Requests</h2>
-<p style="color:#666">You are sending too many requests. Please slow down.</p>
-</div></body></html>"#,
-    )
-    .into_response();
+    let mut resp = status_page("Too many requests");
     *resp.status_mut() = axum::http::StatusCode::TOO_MANY_REQUESTS;
     resp
 }
 
 fn service_unavailable_page() -> Response {
-    let mut resp = Html(
-        r#"<!DOCTYPE html>
-<html><head><title>Service Unavailable</title></head>
-<body style="font-family:system-ui;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#f5f5f5">
-<div style="text-align:center">
-<h2>503 Service Unavailable</h2>
-<p style="color:#666">The tunnel has too many pending requests. Please try again later.</p>
-</div></body></html>"#,
-    )
-    .into_response();
+    let mut resp = status_page("Service unavailable");
     *resp.status_mut() = axum::http::StatusCode::SERVICE_UNAVAILABLE;
     resp
+}
+
+fn status_page(message: &str) -> Response {
+    Html(format!(
+        r#"<!DOCTYPE html>
+<html><head>
+<title>{message}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body style="font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;background:#faf7f2;color:#171717">
+<main style="width:min(420px,calc(100% - 32px));text-align:center">
+<h1 style="margin:0;font-size:24px;font-weight:650;letter-spacing:0">{message}</h1>
+</main></body></html>"#
+    ))
+    .into_response()
 }
 
 #[cfg(test)]

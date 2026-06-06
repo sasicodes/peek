@@ -23,12 +23,24 @@ docker run -p 8080:8080 \
   ghcr.io/sasicodes/peek:latest
 ```
 
-Point these DNS records to the server:
+`PEEK_AUTH_TOKEN` lets your CLI create tunnels on this server.
+
+Add both custom domains to your host:
 
 ```text
 example.com
 *.example.com
 ```
+
+Then add the DNS records your host gives you.
+
+peek creates URLs like:
+
+```text
+https://{random}.example.com
+```
+
+`{random}` is 8 lowercase letters or numbers.
 
 Serve peek behind HTTPS before exposing it publicly.
 
@@ -45,4 +57,23 @@ export PEEK_AUTH_TOKEN=change-me
 peek localhost:3000
 ```
 
-peek prints the public URL and visitor password.
+peek prints a public URL.
+
+Options:
+
+```text
+--token change-me    same value as PEEK_AUTH_TOKEN
+--domain example.com hosted peek domain
+--subdomain myapp    use https://myapp.example.com
+--password secret    require this password for visitors
+```
+
+`--token` creates the tunnel. `--password` protects the public URL and is optional.
+
+Without `--subdomain`, peek creates a random name. Without `--password`, the URL is public.
+
+Uninstall:
+
+```bash
+cargo uninstall peek-client
+```
