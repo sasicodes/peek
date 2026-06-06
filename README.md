@@ -46,14 +46,22 @@ Serve peek behind HTTPS before exposing it publicly.
 
 ## Run
 
+Install the CLI:
+
 ```bash
 cargo install --git https://github.com/sasicodes/peek peek-client
 ```
 
+Use the same domain and token from your hosted server:
+
 ```bash
 export PEEK_DOMAIN=example.com
 export PEEK_AUTH_TOKEN=change-me
+```
 
+Run peek:
+
+```bash
 peek localhost:3000
 ```
 
@@ -61,12 +69,12 @@ peek prints a public URL.
 
 Options:
 
-```text
---token change-me    same value as PEEK_AUTH_TOKEN
---domain example.com hosted peek domain
---subdomain myapp    use https://myapp.example.com
---password secret    require this password for visitors
-```
+| Option | Use |
+| --- | --- |
+| `--token change-me` | same value as `PEEK_AUTH_TOKEN` |
+| `--domain example.com` | hosted peek domain |
+| `--subdomain myapp` | use `https://myapp.example.com` |
+| `--password secret` | require this password for visitors |
 
 `--token` creates the tunnel. `--password` protects the public URL and is optional.
 
