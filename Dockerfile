@@ -1,4 +1,4 @@
-FROM rust:1.86-bookworm AS builder
+FROM rust:1.95-bookworm AS builder
 WORKDIR /app
 COPY . .
 RUN cargo build --locked --release -p peek-relay \
