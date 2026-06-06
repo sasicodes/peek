@@ -80,7 +80,7 @@ Options:
 
 Without `--subdomain`, peek creates a random name. Without `--password`, the URL is public.
 
-Uninstall:
+Uninstall the CLI:
 
 ```bash
 cargo uninstall peek-client
