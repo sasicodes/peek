@@ -52,8 +52,6 @@ Install the CLI:
 cargo install --git https://github.com/sasicodes/peek peek-client --force
 ```
 
-`--force` replaces an older installed `peek` with the latest version from GitHub.
-
 Run peek with the same domain and token from your hosted server:
 
 ```bash
