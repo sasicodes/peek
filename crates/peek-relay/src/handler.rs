@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -6,7 +6,7 @@ use axum::{
     body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Request, State,
+        ConnectInfo, Request, State,
     },
     http::HeaderMap,
     response::{Html, IntoResponse, Response},
@@ -32,14 +32,14 @@ const WRITER_CHANNEL_SIZE: usize = 1024;
 
 pub async fn ws_handler(
     State(registry): State<Arc<Registry>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Response {
     // Rate limit tunnel registrations
-    if let Some(ip) = extract_client_ip(&headers) {
-        if !registry.rate_limiter.check(ip) {
-            return too_many_requests_page();
-        }
+    let ip = extract_client_ip(&headers, peer_addr.ip(), registry.trust_proxy_headers);
+    if !registry.rate_limiter.check(ip) {
+        return too_many_requests_page();
     }
 
     let max_body_size = registry.max_body_size;
@@ -106,10 +106,36 @@ async fn handle_tunnel_client(socket: WebSocket, registry: Arc<Registry>) {
     };
 
     let subdomain = if let Some(ref requested) = reg_req.subdomain {
-        if registry.is_taken(requested).await {
+        let requested = match normalize_subdomain(requested) {
+            Some(s) => s,
+            None => {
+                warn!("tunnel registration rejected: invalid subdomain");
+                let resp = RegistrationResponse {
+                    ok: false,
+                    url: String::new(),
+                    subdomain: String::new(),
+                    error: Some("invalid subdomain".into()),
+                };
+                let Ok(json) = serde_json::to_string(&resp) else {
+                    error!("failed to serialize registration response");
+                    return;
+                };
+                use futures_util::SinkExt;
+                let _ = sink.send(Message::Text(json.into())).await;
+                let _ = sink
+                    .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                        code: peek_proto::close_codes::AUTH_FAILED,
+                        reason: "invalid subdomain".into(),
+                    })))
+                    .await;
+                return;
+            }
+        };
+
+        if registry.is_taken(&requested).await {
             registry.generate_subdomain().await
         } else {
-            requested.clone()
+            requested
         }
     } else {
         registry.generate_subdomain().await
@@ -237,12 +263,19 @@ async fn read_registration(
     }
 }
 
-pub async fn public_handler(State(registry): State<Arc<Registry>>, request: Request) -> Response {
+pub async fn public_handler(
+    State(registry): State<Arc<Registry>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    request: Request,
+) -> Response {
     // Rate limit by client IP
-    if let Some(ip) = extract_client_ip(request.headers()) {
-        if !registry.rate_limiter.check(ip) {
-            return too_many_requests_page();
-        }
+    let ip = extract_client_ip(
+        request.headers(),
+        peer_addr.ip(),
+        registry.trust_proxy_headers,
+    );
+    if !registry.rate_limiter.check(ip) {
+        return too_many_requests_page();
     }
 
     let host = request
@@ -409,32 +442,55 @@ pub async fn public_handler(State(registry): State<Arc<Registry>>, request: Requ
     }
 }
 
-/// Extract client IP from trusted proxy headers.
-/// Priority: CF-Connecting-IP > X-Forwarded-For > X-Real-IP
-fn extract_client_ip(headers: &HeaderMap) -> Option<IpAddr> {
+fn normalize_subdomain(value: &str) -> Option<String> {
+    let value = value.trim().to_ascii_lowercase();
+    let bytes = value.as_bytes();
+    if bytes.is_empty()
+        || bytes.len() > 63
+        || bytes.first() == Some(&b'-')
+        || bytes.last() == Some(&b'-')
+    {
+        return None;
+    }
+
+    if bytes
+        .iter()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+    {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+fn extract_client_ip(headers: &HeaderMap, peer_ip: IpAddr, trust_proxy_headers: bool) -> IpAddr {
+    if !trust_proxy_headers {
+        return peer_ip;
+    }
+
     if let Some(ip) = headers
         .get("cf-connecting-ip")
         .and_then(|v| v.to_str().ok())
     {
         if let Ok(addr) = ip.parse() {
-            return Some(addr);
+            return addr;
         }
     }
     // X-Forwarded-For (first entry is the original client)
     if let Some(forwarded) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
         if let Some(first) = forwarded.split(',').next() {
             if let Ok(addr) = first.trim().parse() {
-                return Some(addr);
+                return addr;
             }
         }
     }
     // X-Real-IP
     if let Some(ip) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
         if let Ok(addr) = ip.parse() {
-            return Some(addr);
+            return addr;
         }
     }
-    None
+    peer_ip
 }
 
 fn generate_auth_cookie(password: &str, subdomain: &str) -> String {
@@ -601,30 +657,45 @@ mod tests {
     #[test]
     fn test_extract_client_ip() {
         let mut headers = HeaderMap::new();
-        assert_eq!(extract_client_ip(&headers), None);
+        let peer_ip: IpAddr = "10.0.0.2".parse().unwrap();
+        assert_eq!(extract_client_ip(&headers, peer_ip, false), peer_ip);
 
-        // CF-Connecting-IP takes priority
+        // Proxy headers are ignored unless explicitly trusted.
+        headers.insert("cf-connecting-ip", "1.2.3.4".parse().unwrap());
+        assert_eq!(extract_client_ip(&headers, peer_ip, false), peer_ip);
+
+        // CF-Connecting-IP takes priority when proxy headers are trusted.
         headers.insert("cf-connecting-ip", "1.2.3.4".parse().unwrap());
         headers.insert("x-forwarded-for", "5.6.7.8, 9.10.11.12".parse().unwrap());
         assert_eq!(
-            extract_client_ip(&headers),
-            Some("1.2.3.4".parse().unwrap())
+            extract_client_ip(&headers, peer_ip, true),
+            "1.2.3.4".parse::<IpAddr>().unwrap()
         );
 
         // Falls back to X-Forwarded-For (first IP)
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", "5.6.7.8, 9.10.11.12".parse().unwrap());
         assert_eq!(
-            extract_client_ip(&headers),
-            Some("5.6.7.8".parse().unwrap())
+            extract_client_ip(&headers, peer_ip, true),
+            "5.6.7.8".parse::<IpAddr>().unwrap()
         );
 
         // Falls back to X-Real-IP
         let mut headers = HeaderMap::new();
         headers.insert("x-real-ip", "10.0.0.1".parse().unwrap());
         assert_eq!(
-            extract_client_ip(&headers),
-            Some("10.0.0.1".parse().unwrap())
+            extract_client_ip(&headers, peer_ip, true),
+            "10.0.0.1".parse::<IpAddr>().unwrap()
         );
+    }
+
+    #[test]
+    fn test_normalize_subdomain() {
+        assert_eq!(normalize_subdomain("My-App"), Some("my-app".into()));
+        assert_eq!(normalize_subdomain("abc123"), Some("abc123".into()));
+        assert_eq!(normalize_subdomain("-bad"), None);
+        assert_eq!(normalize_subdomain("bad-"), None);
+        assert_eq!(normalize_subdomain("bad.name"), None);
+        assert_eq!(normalize_subdomain(""), None);
     }
 }

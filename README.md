@@ -26,6 +26,8 @@ example.com
 *.example.com
 ```
 
+Serve peek behind HTTPS before exposing it publicly.
+
 ## Run
 
 ```bash

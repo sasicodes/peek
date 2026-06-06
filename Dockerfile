@@ -13,4 +13,5 @@ RUN apt-get update \
 COPY --from=builder /app/target/release/peek-relay /usr/local/bin/peek-relay
 ENV PEEK_DOMAIN=localhost
 EXPOSE 8080
+USER 10001:10001
 CMD ["peek-relay"]

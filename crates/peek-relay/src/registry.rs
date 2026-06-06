@@ -16,6 +16,7 @@ pub struct Registry {
     auth_token: Option<String>,
     max_tunnels: usize,
     tunnels: RwLock<HashMap<String, Arc<TunnelConnection>>>,
+    pub trust_proxy_headers: bool,
     pub max_body_size: usize,
     pub rate_limiter: RateLimiter,
 }
@@ -33,6 +34,7 @@ impl Registry {
         auth_token: Option<String>,
         max_tunnels: usize,
         max_body_size: usize,
+        trust_proxy_headers: bool,
         rate_limiter: RateLimiter,
     ) -> Self {
         Self {
@@ -40,6 +42,7 @@ impl Registry {
             auth_token,
             max_tunnels,
             tunnels: RwLock::new(HashMap::new()),
+            trust_proxy_headers,
             max_body_size,
             rate_limiter,
         }

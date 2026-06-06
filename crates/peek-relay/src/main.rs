@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{extract::DefaultBodyLimit, routing::get, Router};
-use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -39,6 +38,7 @@ async fn main() {
     let drain_timeout_secs: u64 = env_var("PEEK_DRAIN_TIMEOUT_SECS", "DRAIN_TIMEOUT_SECS")
         .and_then(|v| v.parse().ok())
         .unwrap_or(30);
+    let trust_proxy_headers = env_bool("PEEK_TRUST_PROXY_HEADERS").unwrap_or(false);
 
     if auth_token.is_some() {
         info!("authentication enabled");
@@ -53,6 +53,7 @@ async fn main() {
         max_body_size_mb = max_body_size_mb,
         rate_limit_rpm = rate_limit_rpm,
         drain_timeout_secs = drain_timeout_secs,
+        trust_proxy_headers = trust_proxy_headers,
         "starting peek-relay"
     );
 
@@ -62,6 +63,7 @@ async fn main() {
         auth_token,
         max_tunnels,
         max_body_size,
+        trust_proxy_headers,
         rate_limiter,
     ));
 
@@ -81,7 +83,6 @@ async fn main() {
         .route("/tunnel", get(ws_handler))
         .fallback(public_handler)
         .layer(DefaultBodyLimit::max(max_body_size))
-        .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(registry);
 
@@ -107,12 +108,15 @@ async fn main() {
         std::process::exit(0);
     });
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            let _ = shutdown_rx.changed().await;
-        })
-        .await
-        .unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        let _ = shutdown_rx.changed().await;
+    })
+    .await
+    .unwrap();
 
     info!("server shut down gracefully");
 }
@@ -123,6 +127,16 @@ fn env_var(primary: &str, fallback: &str) -> Option<String> {
             .then(|| std::env::var(fallback).ok())
             .flatten()
     })
+}
+
+fn env_bool(name: &str) -> Option<bool> {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Some(true),
+            "0" | "false" | "no" | "off" => Some(false),
+            _ => None,
+        })
 }
 
 async fn shutdown_signal() {
