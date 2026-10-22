@@ -291,7 +291,7 @@ pub async fn public_handler(
     if let Some(ref tunnel_password) = conn.password {
         request = match password_gate(request, &subdomain, tunnel_password).await {
             Ok(request) => request,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
     }
 
@@ -590,14 +590,14 @@ async fn password_gate(
     request: Request,
     subdomain: &str,
     tunnel_password: &str,
-) -> Result<Request, Response> {
+) -> Result<Request, Box<Response>> {
     let is_auth_post =
         request.method() == axum::http::Method::POST && request.uri().path() == "/__peek_auth";
 
     if is_auth_post {
         let body_bytes = match request.into_body().collect().await {
             Ok(collected) => collected.to_bytes().to_vec(),
-            Err(_) => return Err(password_page(subdomain, Some("Invalid request"))),
+            Err(_) => return Err(Box::new(password_page(subdomain, Some("Invalid request")))),
         };
         let form_data = String::from_utf8_lossy(&body_bytes);
         let submitted_password = form_data
@@ -619,14 +619,19 @@ async fn password_gate(
             let cookie = format!(
                 "peek_auth_{subdomain}={cookie_value}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=86400"
             );
-            return Err(Response::builder()
-                .status(303)
-                .header("location", "/")
-                .header("set-cookie", cookie)
-                .body(Body::empty())
-                .unwrap_or_else(|_| bad_gateway_page()));
+            return Err(Box::new(
+                Response::builder()
+                    .status(303)
+                    .header("location", "/")
+                    .header("set-cookie", cookie)
+                    .body(Body::empty())
+                    .unwrap_or_else(|_| bad_gateway_page()),
+            ));
         }
-        return Err(password_page(subdomain, Some("Incorrect password")));
+        return Err(Box::new(password_page(
+            subdomain,
+            Some("Incorrect password"),
+        )));
     }
 
     let cookie_name = format!("peek_auth_{subdomain}");
@@ -651,7 +656,7 @@ async fn password_gate(
     if has_valid_cookie {
         Ok(request)
     } else {
-        Err(password_page(subdomain, None))
+        Err(Box::new(password_page(subdomain, None)))
     }
 }
 
